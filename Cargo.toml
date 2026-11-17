@@ -30,6 +30,7 @@ sys-locale = { version = "0.3.2", optional = true }
 unicode-linebreak = "0.1.5"
 unicode-script = "0.5.8"
 unicode-segmentation = "1.12.0"
+unicode-width = { version = "0.2", optional = true }
 
 [dependencies.swash]
 version = "0.2.6"
@@ -46,6 +47,11 @@ features = ["hardcoded-data"]
 default = ["std", "swash", "fontconfig"]
 fontconfig = ["fontdb/fontconfig", "std"]
 monospace_fallback = []
+# Snap glyph advances to whole terminal cells using Unicode East Asian Width
+# (same rules terminal emulators such as alacritty use), so any font,
+# including proportional ones, lines up on a fixed grid when a monospace
+# width is set on the buffer.
+monospace_cells = ["dep:unicode-width"]
 no_std = ["hashbrown", "dep:libm", "skrifa/libm", "core_maths", "swash?/libm"]
 peniko = []
 shape-run-cache = []

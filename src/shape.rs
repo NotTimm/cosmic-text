@@ -237,6 +237,7 @@ fn shape_fallback(
             metadata: attrs.metadata,
             cache_key_flags: override_fake_italic(attrs.cache_key_flags, font, &attrs),
             metrics_opt: attrs.metrics_opt.map(Into::into),
+            cells: 0, // Set later
         });
     }
 
@@ -402,6 +403,8 @@ fn shape_run(
 
     // Debug missing font fallbacks
     font_iter.check_missing(&line[start_run..end_run]);
+
+    set_glyph_cells(&mut glyphs[glyph_start..], line);
 
     /*
     for glyph in glyphs.iter() {
@@ -579,6 +582,7 @@ fn shape_skip_glyphs(
     let ascent = metrics.ascent / f32::from(metrics.units_per_em);
     let descent = metrics.descent / f32::from(metrics.units_per_em);
 
+    let glyph_start = glyphs.len();
     glyphs.extend(
         line[start_run..end_run]
             .char_indices()
@@ -608,9 +612,23 @@ fn shape_skip_glyphs(
                     metadata: attrs.metadata,
                     cache_key_flags: override_fake_italic(attrs.cache_key_flags, font, &attrs),
                     metrics_opt: attrs.metrics_opt.map(Into::into),
+                    cells: 0, // Set later
                 }
             }),
     );
+    set_glyph_cells(&mut glyphs[glyph_start..], line);
+}
+
+/// Fill in [`ShapeGlyph::cells`] once glyph clusters are final.
+#[allow(unused_variables)]
+fn set_glyph_cells(glyphs: &mut [ShapeGlyph], line: &str) {
+    #[cfg(feature = "monospace_cells")]
+    for glyph in glyphs.iter_mut() {
+        let width = line
+            .get(glyph.start..glyph.end)
+            .map_or(1, unicode_width::UnicodeWidthStr::width);
+        glyph.cells = width.min(u8::MAX as usize) as u8;
+    }
 }
 
 fn override_fake_italic(
@@ -644,6 +662,10 @@ pub struct ShapeGlyph {
     pub metadata: usize,
     pub cache_key_flags: CacheKeyFlags,
     pub metrics_opt: Option<Metrics>,
+    /// Number of terminal cells this glyph's cluster occupies, computed with
+    /// Unicode East Asian Width. Only filled in with the `monospace_cells`
+    /// feature, otherwise always 0.
+    pub cells: u8,
 }
 
 impl ShapeGlyph {
@@ -2903,9 +2925,30 @@ impl ShapeLine {
                                     0.0
                                 },
                             );
+                            // Extra space to put before the glyph so narrow glyphs are
+                            // centered in their cell(s)
+                            let mut cell_offset = 0.0;
                             if let Some(match_em_width) = match_mono_em_width {
-                                // Round to nearest monospace width
-                                x_advance = ((x_advance / match_em_width).round()) * match_em_width;
+                                if let (true, Some(cell_width)) = (
+                                    cfg!(feature = "monospace_cells")
+                                        && glyph.cells > 0
+                                        && x_advance > 0.0,
+                                    match_mono_width,
+                                ) {
+                                    // Advance by exactly the number of cells the terminal grid
+                                    // uses for this text, whatever the font says. Glyphs wider
+                                    // than that (e.g. Nerd Font icons) overflow into the next
+                                    // cell instead of pushing the rest of the line over.
+                                    let target = f32::from(glyph.cells) * cell_width;
+                                    if x_advance < target {
+                                        cell_offset = (target - x_advance) / 2.0;
+                                    }
+                                    x_advance = target;
+                                } else {
+                                    // Round to nearest monospace width
+                                    x_advance =
+                                        ((x_advance / match_em_width).round()) * match_em_width;
+                                }
                             }
                             if hinting == Hinting::Enabled {
                                 x_advance = x_advance.round();
@@ -2922,6 +2965,10 @@ impl ShapeLine {
                                 x_advance,
                                 r.level,
                             );
+                            if cell_offset > 0.0 && glyph_font_size > 0.0 {
+                                // x_offset is in em units of the glyph's font size
+                                layout_glyph.x_offset += cell_offset / glyph_font_size;
+                            }
                             // Fix ellipsis glyph indices: point both start and
                             // end to the elision boundary so that hit-detection
                             // places the cursor at the seam between visible and
